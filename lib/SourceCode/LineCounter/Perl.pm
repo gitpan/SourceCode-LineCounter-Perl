@@ -1,4 +1,3 @@
-# $Id$
 package SourceCode::LineCounter::Perl;
 use strict;
 
@@ -10,7 +9,7 @@ use vars qw($VERSION);
 
 use Carp qw(carp);
 
-$VERSION = '0.10_02';
+$VERSION = '0.10_04';
 
 =head1 NAME
 
@@ -20,10 +19,9 @@ SourceCode::LineCounter::Perl - Count lines in Perl source code
 
 	use SourceCode::LineCounter::Perl;
 
-	my $counter    = SourceCode::LineCounter::Perl->new( 
-		);
+	my $counter    = SourceCode::LineCounter::Perl->new;
 
-	$counter->count;
+	$counter->count( $file );
 	
 	my $total_lines   = $counter->total;
 	
@@ -73,8 +71,7 @@ Move on to the next line.
 
 =cut
 
-sub new
-	{
+sub new {
 	my( $class, %hash ) = @_;
 	
 	my $self = bless {}, $class;
@@ -90,61 +87,76 @@ with another file.
 
 =cut
 
-sub reset
-	{
+sub reset {
 	$_[0]->_init;	
 	}
-	
-=item count( FILE )
+
+=item accumulate( [ BOOLEAN ] )
+
+With no argument, returns the current setting as true or false.
+
+With one argument, sets the value for accumulation. If that's true,
+the counter will add to the count from previous calls to C<counter>.
+If false, C<counter> starts fresh each time.
 
 =cut
 
-sub count
-	{
-	my( $self, $file ) = @_;
+sub accumulate {
+	my( $self ) = @_;
 	
+	$self->{accumulate} = !! $_[1] if @_ > 1;
+
+	return $self->{accumulate};
+	}
+
+=item count( FILE )
+
+Counts the lines in FILE. The optional second argument, if true,
+adds those counts to the counts from the last run. By default,
+previous results are cleared.
+
+=cut
+
+sub count {
+	my( $self, $file ) = @_;
+
 	my $fh;
-	unless( open $fh, "<", $file )
-		{
+	unless( open $fh, "<", $file ) {
 		carp "Could not open file [$file]: $!";
 		return;
 		}
 		
-	$self->_clear_line_info;
+	$self->_clear_line_info unless $self->accumulate;
 
-	LINE: while( <$fh> )
-		{
+	LINE: while( <$fh> ) {
+		chomp;
 		$self->_set_current_line( \$_ );
 		
 		$self->_total( \$_ );
-		$self->_is_blank( \$_ );
+		$self->add_to_blank if $self->_is_blank( \$_ );
 		
-		foreach my $type ( qw( _start_pod _end_pod _pod_line ) )
-			{
-			$self->$type( \$_ ) && next LINE;
+		foreach my $type ( qw( _start_pod _end_pod _pod_line ) ) {
+			$self->$type( \$_ ) && $self->add_to_documentation && next LINE;
 			}
 			
-		$self->_is_comment( \$_ );
-		$self->_is_code( \$_ );
+		$self->add_to_comment if $self->_is_comment( \$_ );
+		$self->add_to_code if $self->_is_code( \$_ );
 		}
 		
 	$self;
 	}
 	
-sub _clear_line_info
-	{
+sub _clear_line_info {
 	$_[0]->{line_info} = {};
 	}
 
-sub _set_current_line
-	{
+sub _set_current_line {
 	$_[0]->{line_info}{current_line} = \ $_[1];
 	}
 	
-sub _init
-	{
-	my @attrs = qw(total blank documentation code comment);
-	$_[0]->{$_} = 0 foreach @attrs;
+sub _init {
+	my @attrs = qw(total blank documentation code comment accumulate);
+	foreach ( @attrs ) { $_[0]->{$_} = 0 unless defined $_[0]->{$_} }
 	$_[0]->_clear_line_info;
 	};
 	
@@ -167,35 +179,39 @@ and blank lines in Pod.
 
 sub documentation { $_[0]->{documentation} }
 
-sub _start_pod 
-	{
+=item add_to_documentation
+
+Add to the documentation line counter if the line is documentation.
+
+=cut
+
+sub add_to_documentation {	
+	$_[0]->{line_info}{documentation}++;
+	$_[0]->{documentation}++;
+	
+	1;	
+	}
+
+sub _start_pod {
 	return if $_[0]->_in_pod;
 	return unless ${$_[1]} =~ /^=\w+/;
 	
 	$_[0]->_mark_in_pod;
 	
-	$_[0]->{documentation}++;
-	
 	1;
 	}
 
-sub _end_pod
-	{
+sub _end_pod {
 	return unless $_[0]->_in_pod;
 	return unless ${$_[1]} =~ /^=cut$/;
 	
 	$_[0]->_clear_in_pod;
-	
-	$_[0]->{documentation}++;
 
 	1;
 	}
 
-sub _pod_line
-	{
+sub _pod_line {
 	return unless $_[0]->_in_pod;
-	
-	$_[0]->{documentation}++;
 	}
 	
 sub  _mark_in_pod { $_[0]->{line_info}{in_pod}++   }
@@ -212,18 +228,25 @@ or code.
 
 sub code { $_[0]->{code} }
 
-sub _is_code 
-	{
+=item add_to_code( LINE )
+
+Add to the code line counter if the line is a code line.
+
+=cut
+
+sub add_to_code {
+	$_[0]->{line_info}{code}++;
+	++$_[0]->{code};
+	}
+
+sub _is_code {
 	my( $self, $line_ref ) = @_;
-	
-	return if grep { $self->{line_info}{$_} }
-		qw(blank in_pod);
+	return if grep { $self->$_() } qw(_is_blank _in_pod);
 		
+	# this will be false for things in strings!
 	( my $copy = $$line_ref ) =~ s/\s*#.*//;
 	
 	return unless length $copy;
-	
-	$self->{code}++;
 
 	1;
 	}
@@ -238,14 +261,21 @@ or code lines that have comments.
 
 sub comment { $_[0]->{comment} }
 
-sub _is_comment 
-	{
+=item add_to_comment
+
+Add to the comment line counter if the line has a comment. A line
+might be counted as both code and comments.
+
+=cut
+
+sub add_to_comment {
+	$_[0]->{line_info}{comment}++;
+	++$_[0]->{comment};
+	}
+
+sub _is_comment {
 	return if $_[0]->_in_pod;
 	return unless ${$_[1]} =~ m/#/;
-
-	$_[0]->{line_info}{comment}++;
-	$_[0]->{comment}++;
-	
 	1;
 	}
 
@@ -259,13 +289,20 @@ by specifying the C<line_ending> parameter.
 
 sub blank  { $_[0]->{blank} }
 
-sub _is_blank 
-	{
-	return unless ${$_[1]} =~ m/^\s*$/;
-	
+=item add_to_blank
+
+Add to the blank line counter if the line is blank.
+
+=cut
+
+sub add_to_blank {	
 	$_[0]->{line_info}{blank}++;
-	$_[0]->{blank}++;
-	
+	++$_[0]->{blank};
+	}
+
+sub _is_blank {
+	return unless defined $_[1];
+	return unless ${$_[1]} =~ m/^\s*$/;
 	1;
 	}
 
@@ -273,21 +310,21 @@ sub _is_blank
 
 =head1 TO DO
 
-* Generalized LineCounter that can dispatch to language
+=over 4
+
+=item * Generalized LineCounter that can dispatch to language
 delegates.
+
+=back
 
 =head1 SEE ALSO
 
 
 =head1 SOURCE AVAILABILITY
 
-This source is part of a SourceForge project which always has the
-latest sources in CVS, as well as all of the previous releases.
+This source is in Github
 
-	http://sourceforge.net/projects/brian-d-foy/
-
-If, for some reason, I disappear from the world, one of the other
-members of the project can shepherd this module appropriately.
+	https://github.com/briandfoy/sourcecode-linecounter-perl
 
 =head1 AUTHOR
 
@@ -295,7 +332,7 @@ brian d foy, C<< <bdfoy@cpan.org> >>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (c) 2008, brian d foy, All Rights Reserved.
+Copyright (c) 2008-2013, brian d foy, All Rights Reserved.
 
 You may redistribute this under the same terms as Perl itself.
 

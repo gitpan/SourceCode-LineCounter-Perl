@@ -2,11 +2,14 @@
 use strict;
 use warnings;
 
-use Test::More 'no_plan';
+use Test::More;
 use Test::Output;
 
 use File::Spec::Functions qw(catfile);
 
+$SIG{__WARN__} = sub { print STDERR @_ };
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 my $class = "SourceCode::LineCounter::Perl";
 my @methods = qw( 
 	new reset count
@@ -37,15 +40,13 @@ foreach my $hash ( @files )
 	ok( -e $file, "Test file [$file] exists" );
 	
 	$counter->reset;
-	foreach my $method ( qw(total code comment blank documentation ) )
-		{
+	foreach my $method ( qw(total code comment blank documentation ) ) {
 		is( $counter->$method(), 0, "$method starts off at 0" );
 		}
 		
 	ok( $counter->count( $file ), "count returns true for good file" );
 
-	foreach my $method ( qw(total code comment blank documentation ) )
-		{
+	foreach my $method ( qw(total code comment blank documentation ) ) {
 		is( $counter->$method(), $hash->{$method}, "$method ends with [$hash->{$method}]" );
 		}
 	
@@ -53,12 +54,14 @@ foreach my $hash ( @files )
 	
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Try a file that doesn't exist. It should fail
-{
-my $not_there = '';
-ok( ! -e $not_there, "File [$not_there] does not exist" );
+subtest not_there => sub {
+	my $not_there = '';
+	ok( ! -e $not_there, "File [$not_there] does not exist" );
 
-stderr_like
-	{ $counter->count( $not_there ) }
-	qr/not open/,
-	"Carps for missing file";
-}
+	stderr_like
+		{ $counter->count( $not_there ) }
+		qr/not open/,
+		"Carps for missing file";
+	};
+
+done_testing();
